@@ -2,9 +2,11 @@ version: '3.9'
 
 services:
   web:
-    image: flask-app:0.1.0
+    build: .
     ports:
       - "5000:5000"
+    volumes:
+      - ./myapp:/app
     environment:
       - FLASK_APP=app.py
       - FLASK_RUN_HOST=0.0.0.0
@@ -26,3 +28,4 @@ services:
 
 volumes:
   pgdata:
+

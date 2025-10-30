@@ -1,7 +1,11 @@
 import logging
 import os
+import secrets
+from urllib.parse import urljoin
 
 import psycopg2
+from authlib.integrations.flask_client import OAuth
+from authlib.integrations.requests_client import OAuth2Session
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, url_for
 from flask_login import (
@@ -32,6 +36,26 @@ login_manager.login_view = "login"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
+oauth = OAuth(app)
+
+oauth.register(
+    name="google",
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+    client_kwargs={"scope": "openid email profile"},
+)
+
+oauth.register(
+    name="github",
+    api_base_url="https://api.github.com/",
+    access_token_url="https://github.com/login/oauth/access_token",
+    authorize_url="https://github.com/login/oauth/authorize",
+    client_id=os.environ.get("GITHUB_CLIENT_ID"),
+    client_secret=os.environ.get("GITHUB_CLIENT_SECRET"),
+    client_kwargs={"scope": "read:user user:email"},
+)
+
 
 def get_db():
     conn = psycopg2.connect(app.config["DATABASE_URL"])
@@ -51,9 +75,20 @@ def init_db():
         )
     """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS oauth_accounts (
+            id SERIAL PRIMARY KEY,
+            provider VARCHAR(50) NOT NULL,
+            provider_user_id VARCHAR(255) NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(provider, provider_user_id)
+        )
+    """
+    )
     conn.commit()
     conn.close()
-    logger.info("table created")
+    logger.info("tables created")
 
 
 class User(UserMixin):
@@ -176,6 +211,49 @@ def login():
         return redirect(url_for("login"))
 
     return render_template("login.html")
+
+
+def redirect_uri_for(provider: str):
+    base = os.environ.get("OAUTH_REDIRECT_BASE", request.host_url.rstrip("/"))
+    return urljoin(base + "/", f"auth/{provider}/callback")
+
+
+@app.route("/login/<provider>")
+def oauth_login(provider):
+    if provider not in ("google", "github"):
+        flash("Unsupported provider", "danger")
+        return redirect(url_for("login"))
+    client = oauth.create_client(provider)
+    return client.authorize_redirect(redirect_uri_for(provider))
+
+
+@app.route("/auth/<provider>/callback")
+def oauth_callback(provider):
+    client: OAuth2Session | None = oauth.create_client(provider)
+    if client is None:
+        flash("OAuth provider not configured.", "danger")
+        return redirect(url_for("login"))
+
+    token = client.authorize_access_token()
+
+    user_info = {}
+
+    if provider == "google":
+        user_info = client.parse_id_token(token, nonce=None)
+        provider_user_id = user_info.get("sub")
+        email = user_info.get("email")
+        username = user_info.get("name") or email.split("@")[0]
+
+    elif provider == "github":
+        profile = client.get("user").json()
+        emails = client.get("user/emails").json()
+        email = profile.get("email") or next(
+            (e["email"] for e in emails if e.get("primary")), None
+        )
+        provider_user_id = str(profile["id"])
+        username = profile.get("login")
+
+    return finish_oauth_login(provider, provider_user_id, email, username)
 
 
 @app.route("/dashboard")
@@ -394,6 +472,57 @@ def logout():
     logout_user()
     flash("You have been logged out successfully.", "success")
     return redirect(url_for("login"))
+
+
+def finish_oauth_login(provider, provider_user_id, email, username):
+    if not email:
+        flash("Login failed: provider did not return an email", "danger")
+        return redirect(url_for("login"))
+
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute(
+        """
+        SELECT u.* FROM users u
+        JOIN oauth_accounts oa ON u.id = oa.user_id
+        WHERE oa.provider=%s AND oa.provider_user_id=%s
+        """,
+        (provider, provider_user_id),
+    )
+    user = cur.fetchone()
+
+    if not user:
+        cur.execute("SELECT * FROM users WHERE email=%s", (email,))
+        user = cur.fetchone()
+
+        if not user:
+            password_hash = generate_password_hash(secrets.token_hex(16))
+            cur.execute(
+                """
+                INSERT INTO users (username, email, password_hash)
+                VALUES (%s, %s, %s)
+                RETURNING *
+                """,
+                (username, email, password_hash),
+            )
+            user = cur.fetchone()
+
+        cur.execute(
+            """
+            INSERT INTO oauth_accounts (provider, provider_user_id, user_id)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (provider, provider_user_id) DO NOTHING
+            """,
+            (provider, provider_user_id, user["id"]),
+        )
+        conn.commit()
+
+    conn.close()
+
+    login_user(User(user["id"], user["username"], user["email"]))
+    flash(f"Logged in with {provider.capitalize()}", "success")
+    return redirect(url_for("dashboard"))
 
 
 if __name__ == "__main__":

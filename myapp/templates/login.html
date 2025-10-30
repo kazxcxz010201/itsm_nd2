@@ -4,10 +4,11 @@
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card">
+    <div class="col-md-6 col-lg-5">
+        <div class="card shadow border-0">
             <div class="card-body p-5">
-                <h2 class="card-title text-center mb-4">Login</h2>
+                <h2 class="card-title text-center mb-4 fw-bold">Login</h2>
+
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
@@ -20,11 +21,33 @@
                     </div>
                     <button type="submit" class="btn btn-primary w-100">Login</button>
                 </form>
+
                 <div class="text-center mt-3">
                     <p>Don't have an account? <a href="{{ url_for('signup') }}">Sign Up</a></p>
                 </div>
+
+                <hr class="my-4">
+
+                <!-- OAuth buttons -->
+                <div class="text-center">
+                    <p class="text-muted mb-3">Or continue with</p>
+                    <div class="d-grid gap-2">
+                        <a href="{{ url_for('oauth_login', provider='google') }}" 
+                           class="btn btn-light border d-flex align-items-center justify-content-center gap-2">
+                            <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" width="20" height="20">
+                            <span>Sign in with Google</span>
+                        </a>
+                        <a href="{{ url_for('oauth_login', provider='github') }}" 
+                           class="btn btn-dark d-flex align-items-center justify-content-center gap-2">
+                            <i class="bi bi-github"></i>
+                            <span>Sign in with GitHub</span>
+                        </a>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
 </div>
 {% endblock %}
+
