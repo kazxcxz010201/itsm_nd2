@@ -7,7 +7,7 @@ import psycopg2
 from authlib.integrations.flask_client import OAuth
 from authlib.integrations.requests_client import OAuth2Session
 from dotenv import load_dotenv
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, flash, redirect, render_template, request, session, url_for
 from flask_login import (
     LoginManager,
     UserMixin,
@@ -223,8 +223,15 @@ def oauth_login(provider):
     if provider not in ("google", "github"):
         flash("Unsupported provider", "danger")
         return redirect(url_for("login"))
+
     client = oauth.create_client(provider)
-    return client.authorize_redirect(redirect_uri_for(provider))
+
+    if provider == "google":
+        nonce = secrets.token_urlsafe(16)
+        session["nonce"] = nonce
+        return client.authorize_redirect(redirect_uri_for(provider), nonce=nonce)
+    else:
+        return client.authorize_redirect(redirect_uri_for(provider))
 
 
 @app.route("/auth/<provider>/callback")
@@ -239,7 +246,8 @@ def oauth_callback(provider):
     user_info = {}
 
     if provider == "google":
-        user_info = client.parse_id_token(token, nonce=None)
+        nonce = session.pop("nonce", None)
+        user_info = client.parse_id_token(token, nonce=nonce)
         provider_user_id = user_info.get("sub")
         email = user_info.get("email")
         username = user_info.get("name") or email.split("@")[0]
