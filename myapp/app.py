@@ -21,6 +21,7 @@ from psycopg2.extras import RealDictCursor
 from werkzeug.security import check_password_hash, generate_password_hash
 
 load_dotenv()
+ACTIVE_SESSIONS = set()
 
 app = Flask(__name__)
 
@@ -71,7 +72,9 @@ def init_db():
             id SERIAL PRIMARY KEY,
             username VARCHAR(255) UNIQUE NOT NULL,
             email VARCHAR(255) UNIQUE NOT NULL,
-            password_hash VARCHAR(255) NOT NULL
+            password_hash VARCHAR(255) NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            force_logout BOOLEAN DEFAULT FALSE
         )
     """
     )
@@ -106,9 +109,36 @@ def load_user(user_id):
     user_data = cursor.fetchone()
     conn.close()
 
-    if user_data:
+    if user_data and user_data.get("is_active", True):
         return User(user_data["id"], user_data["username"], user_data["email"])
     return None
+
+
+@app.before_request
+def check_force_logout():
+    if current_user.is_authenticated:
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            "SELECT force_logout FROM users WHERE id = %s", (current_user.id,)
+        )
+        user = cursor.fetchone()
+        conn.close()
+
+        if user and user["force_logout"]:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET force_logout = FALSE WHERE id = %s",
+                (current_user.id,),
+            )
+            conn.commit()
+            conn.close()
+
+            ACTIVE_SESSIONS.discard(current_user.id)
+            logout_user()
+            flash("Your session has been terminated by an administrator.", "warning")
+            return redirect(url_for("login"))
 
 
 @app.route("/")
@@ -198,9 +228,14 @@ def login():
         user_data = cursor.fetchone()
         conn.close()
 
+        if user_data and not user_data.get("is_active", True):
+            flash("Your account has been deactivated by an administrator.", "danger")
+            return redirect(url_for("login"))
+
         if user_data and check_password_hash(user_data["password_hash"], password):
             user = User(user_data["id"], user_data["username"], user_data["email"])
             login_user(user)
+            ACTIVE_SESSIONS.add(user.id)
 
             if user.username.lower() == "admin":
                 return redirect(url_for("admin"))
@@ -354,11 +389,11 @@ def admin():
 
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("SELECT id, username, email FROM users ORDER BY id")
+    cursor.execute("SELECT id, username, email, is_active FROM users ORDER BY id")
     users = cursor.fetchall()
     conn.close()
 
-    return render_template("admin.html", users=users)
+    return render_template("admin.html", users=users, active_sessions=ACTIVE_SESSIONS)
 
 
 @app.route("/admin/edit_user/<int:user_id>", methods=["GET", "POST"])
@@ -474,9 +509,75 @@ def admin_delete_user(user_id):
     return redirect(url_for("admin"))
 
 
+@app.route("/admin/toggle_active/<int:user_id>", methods=["POST"])
+@login_required
+def admin_toggle_active(user_id):
+    if current_user.username.lower() != "admin":
+        flash("Access denied! Admin privileges required.", "danger")
+        return redirect(url_for("dashboard"))
+
+    conn = get_db()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute(
+        "SELECT id, username, is_active FROM users WHERE id = %s", (user_id,)
+    )
+    user = cursor.fetchone()
+
+    if not user:
+        flash("User not found!", "danger")
+        conn.close()
+        return redirect(url_for("admin"))
+
+    if user["username"].lower() == "admin":
+        flash("Cannot deactivate the admin account!", "danger")
+        conn.close()
+        return redirect(url_for("admin"))
+
+    new_state = not user["is_active"]
+    if new_state:
+        cursor.execute(
+            "UPDATE users SET is_active = %s, force_logout = FALSE WHERE id = %s",
+            (new_state, user_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE users SET is_active = %s WHERE id = %s",
+            (new_state, user_id),
+        )
+    conn.commit()
+    conn.close()
+
+    flash(
+        f"User '{user['username']}' has been {'reactivated' if new_state else 'deactivated'}.",
+        "success",
+    )
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/force_logout/<int:user_id>", methods=["POST"])
+@login_required
+def admin_force_logout(user_id):
+    if current_user.username.lower() != "admin":
+        flash("Access denied! Admin privileges required.", "danger")
+        return redirect(url_for("dashboard"))
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET force_logout = TRUE WHERE id = %s", (user_id,))
+    conn.commit()
+    conn.close()
+
+    if user_id in ACTIVE_SESSIONS:
+        ACTIVE_SESSIONS.remove(user_id)
+
+    flash(f"User ID {user_id} has been force logged out.", "success")
+    return redirect(url_for("admin"))
+
+
 @app.route("/logout")
 @login_required
 def logout():
+    ACTIVE_SESSIONS.discard(current_user.id)
     logout_user()
     flash("You have been logged out successfully.", "success")
     return redirect(url_for("login"))
@@ -528,7 +629,12 @@ def finish_oauth_login(provider, provider_user_id, email, username):
 
     conn.close()
 
+    if not user.get("is_active", True):
+        flash("Your account has been deactivated by an administrator.", "danger")
+        return redirect(url_for("login"))
+
     login_user(User(user["id"], user["username"], user["email"]))
+    ACTIVE_SESSIONS.add(user["id"])
     flash(f"Logged in with {provider.capitalize()}", "success")
     return redirect(url_for("dashboard"))
 
