@@ -1,50 +1,67 @@
-import os
-import psycopg2
 import logging
-from psycopg2.extras import RealDictCursor
-from flask import Flask, render_template, request, redirect, url_for, flash
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+import os
+
+import psycopg2
+from dotenv import load_dotenv
+from flask import Flask, flash, redirect, render_template, request, url_for
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    current_user,
+    login_required,
+    login_user,
+    logout_user,
+)
 from flask_wtf.csrf import CSRFProtect
-from werkzeug.security import generate_password_hash, check_password_hash
+from psycopg2.extras import RealDictCursor
+from werkzeug.security import check_password_hash, generate_password_hash
+
+load_dotenv()
 
 app = Flask(__name__)
 
-app.config['SECRET_KEY'] = "defaultkey"
-app.config['WTF_CSRF_ENABLED'] = True
-app.config['DATABASE_URL'] = os.environ.get('DATABASE_URL')
+app.config["SECRET_KEY"] = "defaultkey"
+app.config["WTF_CSRF_ENABLED"] = True
+app.config["DATABASE_URL"] = os.environ.get("DATABASE_URL")
 
 csrf = CSRFProtect(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
-login_manager.login_view = 'login'
+login_manager.login_view = "login"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
+
 def get_db():
-    conn = psycopg2.connect(app.config['DATABASE_URL'])
+    conn = psycopg2.connect(app.config["DATABASE_URL"])
     return conn
+
 
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('''
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username VARCHAR(255) UNIQUE NOT NULL,
             email VARCHAR(255) UNIQUE NOT NULL,
             password_hash VARCHAR(255) NOT NULL
         )
-    ''')
+    """
+    )
     conn.commit()
     conn.close()
     logger.info("table created")
+
 
 class User(UserMixin):
     def __init__(self, id, username, email):
         self.id = id
         self.username = username
         self.email = email
+
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -53,299 +70,333 @@ def load_user(user_id):
     cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
     user_data = cursor.fetchone()
     conn.close()
-    
+
     if user_data:
-        return User(user_data['id'], user_data['username'], user_data['email'])
+        return User(user_data["id"], user_data["username"], user_data["email"])
     return None
 
-@app.route('/')
+
+@app.route("/")
 def index():
     if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
-    return redirect(url_for('login'))
+        return redirect(url_for("dashboard"))
+    return redirect(url_for("login"))
 
-@app.route('/signup', methods=['GET', 'POST'])
+
+@app.route("/signup", methods=["GET", "POST"])
 def signup():
     if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
-    
-    if request.method == 'POST':
-        username = request.form.get('username')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        password_repeat = request.form.get('password_repeat')
-        
+        return redirect(url_for("dashboard"))
+
+    if request.method == "POST":
+        username = request.form.get("username")
+        email = request.form.get("email")
+        password = request.form.get("password")
+        password_repeat = request.form.get("password_repeat")
+
         if not username or not email or not password or not password_repeat:
-            flash('All fields are required!', 'danger')
-            return redirect(url_for('signup'))
-        
+            flash("All fields are required!", "danger")
+            return redirect(url_for("signup"))
+
         if password != password_repeat:
-            flash('Passwords do not match!', 'danger')
-            return redirect(url_for('signup'))
-        
+            flash("Passwords do not match!", "danger")
+            return redirect(url_for("signup"))
+
         conn = get_db()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        if username.lower() == 'admin':
+
+        if username.lower() == "admin":
             cursor.execute("SELECT COUNT(*) FROM users WHERE LOWER(username) = 'admin'")
-            if cursor.fetchone()['count'] > 0:
-                flash('Admin account already exists! Please choose a different username.', 'danger')
+            if cursor.fetchone()["count"] > 0:
+                flash(
+                    "Admin account already exists! Please choose a different username.",
+                    "danger",
+                )
                 conn.close()
-                return redirect(url_for('signup'))
-        
+                return redirect(url_for("signup"))
+
         cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
         if cursor.fetchone():
-            flash('Username already exists!', 'danger')
+            flash("Username already exists!", "danger")
             conn.close()
-            return redirect(url_for('signup'))
-        
+            return redirect(url_for("signup"))
+
         cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
         if cursor.fetchone():
-            flash('Email already registered!', 'danger')
+            flash("Email already registered!", "danger")
             conn.close()
-            return redirect(url_for('signup'))
-        
+            return redirect(url_for("signup"))
+
         password_hash = generate_password_hash(password)
-        cursor.execute("INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s)",
-                      (username, email, password_hash))
+        cursor.execute(
+            "INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s)",
+            (username, email, password_hash),
+        )
         conn.commit()
         conn.close()
-        
-        if username.lower() == 'admin':
-            flash('Admin account created successfully! Please log in.', 'success')
-        else:
-            flash('Account created successfully! Please log in.', 'success')
-        return redirect(url_for('login'))
-    
-    return render_template('signup.html')
 
-@app.route('/login', methods=['GET', 'POST'])
+        if username.lower() == "admin":
+            flash("Admin account created successfully! Please log in.", "success")
+        else:
+            flash("Account created successfully! Please log in.", "success")
+        return redirect(url_for("login"))
+
+    return render_template("signup.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
-    
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
+        return redirect(url_for("dashboard"))
+
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+
         if not username or not password:
-            flash('Please enter both username and password!', 'danger')
-            return redirect(url_for('login'))
-        
+            flash("Please enter both username and password!", "danger")
+            return redirect(url_for("login"))
+
         conn = get_db()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
         user_data = cursor.fetchone()
         conn.close()
-        
-        if user_data and check_password_hash(user_data['password_hash'], password):
-            user = User(user_data['id'], user_data['username'], user_data['email'])
-            login_user(user)
-            
-            if user.username.lower() == 'admin':
-                return redirect(url_for('admin'))
-            
-            return redirect(url_for('dashboard'))
-        
-        flash('Invalid username or password!', 'danger')
-        return redirect(url_for('login'))
-    
-    return render_template('login.html')
 
-@app.route('/dashboard')
+        if user_data and check_password_hash(user_data["password_hash"], password):
+            user = User(user_data["id"], user_data["username"], user_data["email"])
+            login_user(user)
+
+            if user.username.lower() == "admin":
+                return redirect(url_for("admin"))
+
+            return redirect(url_for("dashboard"))
+
+        flash("Invalid username or password!", "danger")
+        return redirect(url_for("login"))
+
+    return render_template("login.html")
+
+
+@app.route("/dashboard")
 @login_required
 def dashboard():
-    if current_user.username.lower() == 'admin':
-        return redirect(url_for('admin'))
-    return render_template('dashboard.html')
+    if current_user.username.lower() == "admin":
+        return redirect(url_for("admin"))
+    return render_template("dashboard.html")
 
-@app.route('/edit_profile', methods=['GET', 'POST'])
+
+@app.route("/edit_profile", methods=["GET", "POST"])
 @login_required
 def edit_profile():
-    if request.method == 'POST':
-        new_username = request.form.get('username')
-        new_email = request.form.get('email')
-        new_password = request.form.get('password')
-        new_password_repeat = request.form.get('password_repeat')
-        
+    if request.method == "POST":
+        new_username = request.form.get("username")
+        new_email = request.form.get("email")
+        new_password = request.form.get("password")
+        new_password_repeat = request.form.get("password_repeat")
+
         if not new_username or not new_email:
-            flash('Username and email are required!', 'danger')
-            return redirect(url_for('edit_profile'))
-        
-        if current_user.username.lower() == 'admin' and new_username != 'admin':
-            flash('Admin username cannot be changed!', 'danger')
-            return redirect(url_for('edit_profile'))
-        
-        if current_user.username.lower() != 'admin' and new_username.lower() == 'admin':
-            flash('Cannot change username to "admin"!', 'danger')
-            return redirect(url_for('edit_profile'))
-        
+            flash("Username and email are required!", "danger")
+            return redirect(url_for("edit_profile"))
+
+        if current_user.username.lower() == "admin" and new_username != "admin":
+            flash("Admin username cannot be changed!", "danger")
+            return redirect(url_for("edit_profile"))
+
+        if current_user.username.lower() != "admin" and new_username.lower() == "admin":
+            flash('Cannot change username to "admin"!', "danger")
+            return redirect(url_for("edit_profile"))
+
         conn = get_db()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         if new_username != current_user.username:
-            cursor.execute("SELECT * FROM users WHERE username = %s AND id != %s", (new_username, current_user.id))
+            cursor.execute(
+                "SELECT * FROM users WHERE username = %s AND id != %s",
+                (new_username, current_user.id),
+            )
             if cursor.fetchone():
-                flash('Username already exists!', 'danger')
+                flash("Username already exists!", "danger")
                 conn.close()
-                return redirect(url_for('edit_profile'))
-        
+                return redirect(url_for("edit_profile"))
+
         if new_email != current_user.email:
-            cursor.execute("SELECT * FROM users WHERE email = %s AND id != %s", (new_email, current_user.id))
+            cursor.execute(
+                "SELECT * FROM users WHERE email = %s AND id != %s",
+                (new_email, current_user.id),
+            )
             if cursor.fetchone():
-                flash('Email already registered!', 'danger')
+                flash("Email already registered!", "danger")
                 conn.close()
-                return redirect(url_for('edit_profile'))
-        
+                return redirect(url_for("edit_profile"))
+
         if new_password:
             if new_password != new_password_repeat:
-                flash('Passwords do not match!', 'danger')
+                flash("Passwords do not match!", "danger")
                 conn.close()
-                return redirect(url_for('edit_profile'))
-            
+                return redirect(url_for("edit_profile"))
+
             password_hash = generate_password_hash(new_password)
-            cursor.execute("UPDATE users SET username = %s, email = %s, password_hash = %s WHERE id = %s",
-                          (new_username, new_email, password_hash, current_user.id))
+            cursor.execute(
+                "UPDATE users SET username = %s, email = %s, password_hash = %s WHERE id = %s",
+                (new_username, new_email, password_hash, current_user.id),
+            )
         else:
-            cursor.execute("UPDATE users SET username = %s, email = %s WHERE id = %s",
-                          (new_username, new_email, current_user.id))
-        
+            cursor.execute(
+                "UPDATE users SET username = %s, email = %s WHERE id = %s",
+                (new_username, new_email, current_user.id),
+            )
+
         conn.commit()
         conn.close()
-        
+
         current_user.username = new_username
         current_user.email = new_email
-        
-        flash('Profile updated successfully!', 'success')
-        return redirect(url_for('dashboard'))
-    
-    return render_template('edit_profile.html')
 
-@app.route('/admin')
+        flash("Profile updated successfully!", "success")
+        return redirect(url_for("dashboard"))
+
+    return render_template("edit_profile.html")
+
+
+@app.route("/admin")
 @login_required
 def admin():
-    if current_user.username.lower() != 'admin':
-        flash('Access denied! Admin privileges required.', 'danger')
-        return redirect(url_for('dashboard'))
-    
+    if current_user.username.lower() != "admin":
+        flash("Access denied! Admin privileges required.", "danger")
+        return redirect(url_for("dashboard"))
+
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT id, username, email FROM users ORDER BY id")
     users = cursor.fetchall()
     conn.close()
-    
-    return render_template('admin.html', users=users)
 
-@app.route('/admin/edit_user/<int:user_id>', methods=['GET', 'POST'])
+    return render_template("admin.html", users=users)
+
+
+@app.route("/admin/edit_user/<int:user_id>", methods=["GET", "POST"])
 @login_required
 def admin_edit_user(user_id):
-    if current_user.username.lower() != 'admin':
-        flash('Access denied! Admin privileges required.', 'danger')
-        return redirect(url_for('dashboard'))
-    
+    if current_user.username.lower() != "admin":
+        flash("Access denied! Admin privileges required.", "danger")
+        return redirect(url_for("dashboard"))
+
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    
-    if request.method == 'POST':
-        new_username = request.form.get('username')
-        new_email = request.form.get('email')
-        new_password = request.form.get('password')
-        
+
+    if request.method == "POST":
+        new_username = request.form.get("username")
+        new_email = request.form.get("email")
+        new_password = request.form.get("password")
+
         if not new_username or not new_email:
-            flash('Username and email are required!', 'danger')
-            return redirect(url_for('admin_edit_user', user_id=user_id))
-        
+            flash("Username and email are required!", "danger")
+            return redirect(url_for("admin_edit_user", user_id=user_id))
+
         cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
         target_user = cursor.fetchone()
-        
+
         if not target_user:
-            flash('User not found!', 'danger')
+            flash("User not found!", "danger")
             conn.close()
-            return redirect(url_for('admin'))
-        
-        if target_user['username'].lower() == 'admin' and new_username != 'admin':
-            flash('Admin username cannot be changed!', 'danger')
+            return redirect(url_for("admin"))
+
+        if target_user["username"].lower() == "admin" and new_username != "admin":
+            flash("Admin username cannot be changed!", "danger")
             conn.close()
-            return redirect(url_for('admin_edit_user', user_id=user_id))
-        
-        cursor.execute("SELECT * FROM users WHERE username = %s AND id != %s", (new_username, user_id))
+            return redirect(url_for("admin_edit_user", user_id=user_id))
+
+        cursor.execute(
+            "SELECT * FROM users WHERE username = %s AND id != %s",
+            (new_username, user_id),
+        )
         if cursor.fetchone():
-            flash('Username already exists!', 'danger')
+            flash("Username already exists!", "danger")
             conn.close()
-            return redirect(url_for('admin_edit_user', user_id=user_id))
-        
-        cursor.execute("SELECT * FROM users WHERE email = %s AND id != %s", (new_email, user_id))
+            return redirect(url_for("admin_edit_user", user_id=user_id))
+
+        cursor.execute(
+            "SELECT * FROM users WHERE email = %s AND id != %s", (new_email, user_id)
+        )
         if cursor.fetchone():
-            flash('Email already registered!', 'danger')
+            flash("Email already registered!", "danger")
             conn.close()
-            return redirect(url_for('admin_edit_user', user_id=user_id))
-        
+            return redirect(url_for("admin_edit_user", user_id=user_id))
+
         if new_password:
             password_hash = generate_password_hash(new_password)
-            cursor.execute("UPDATE users SET username = %s, email = %s, password_hash = %s WHERE id = %s",
-                          (new_username, new_email, password_hash, user_id))
+            cursor.execute(
+                "UPDATE users SET username = %s, email = %s, password_hash = %s WHERE id = %s",
+                (new_username, new_email, password_hash, user_id),
+            )
         else:
-            cursor.execute("UPDATE users SET username = %s, email = %s WHERE id = %s",
-                          (new_username, new_email, user_id))
-        
+            cursor.execute(
+                "UPDATE users SET username = %s, email = %s WHERE id = %s",
+                (new_username, new_email, user_id),
+            )
+
         conn.commit()
         conn.close()
-        
-        flash('User updated successfully!', 'success')
-        return redirect(url_for('admin'))
-    
+
+        flash("User updated successfully!", "success")
+        return redirect(url_for("admin"))
+
     cursor.execute("SELECT id, username, email FROM users WHERE id = %s", (user_id,))
     user = cursor.fetchone()
     conn.close()
-    
-    if not user:
-        flash('User not found!', 'danger')
-        return redirect(url_for('admin'))
-    
-    return render_template('admin_edit_user.html', user=user)
 
-@app.route('/admin/delete_user/<int:user_id>', methods=['POST'])
+    if not user:
+        flash("User not found!", "danger")
+        return redirect(url_for("admin"))
+
+    return render_template("admin_edit_user.html", user=user)
+
+
+@app.route("/admin/delete_user/<int:user_id>", methods=["POST"])
 @login_required
 def admin_delete_user(user_id):
-    if current_user.username.lower() != 'admin':
-        flash('Access denied! Admin privileges required.', 'danger')
-        return redirect(url_for('dashboard'))
-    
+    if current_user.username.lower() != "admin":
+        flash("Access denied! Admin privileges required.", "danger")
+        return redirect(url_for("dashboard"))
+
     if user_id == current_user.id:
-        flash('You cannot delete your own account!', 'danger')
-        return redirect(url_for('admin'))
-    
+        flash("You cannot delete your own account!", "danger")
+        return redirect(url_for("admin"))
+
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    
+
     cursor.execute("SELECT username FROM users WHERE id = %s", (user_id,))
     user = cursor.fetchone()
-    
+
     if not user:
-        flash('User not found!', 'danger')
+        flash("User not found!", "danger")
         conn.close()
-        return redirect(url_for('admin'))
-    
-    if user['username'].lower() == 'admin':
-        flash('Cannot delete admin account!', 'danger')
+        return redirect(url_for("admin"))
+
+    if user["username"].lower() == "admin":
+        flash("Cannot delete admin account!", "danger")
         conn.close()
-        return redirect(url_for('admin'))
-    
+        return redirect(url_for("admin"))
+
     cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
     conn.commit()
     conn.close()
-    
-    flash('User deleted successfully!', 'success')
-    return redirect(url_for('admin'))
 
-@app.route('/logout')
+    flash("User deleted successfully!", "success")
+    return redirect(url_for("admin"))
+
+
+@app.route("/logout")
 @login_required
 def logout():
     logout_user()
-    flash('You have been logged out successfully.', 'success')
-    return redirect(url_for('login'))
+    flash("You have been logged out successfully.", "success")
+    return redirect(url_for("login"))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     init_db()
     logger.info("START BY ME")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
