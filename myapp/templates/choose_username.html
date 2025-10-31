@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Choose Username{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+	<div class="col-md-6 col-lg-5">
+		<div class="card shadow border-0">
+			<div class="card-body p-5 text-center">
+				<h2 class="fw-bold mb-4">Choose Your Username</h2>
+				<form method="POST">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+					<div class="mb-3 text-start">
+						<label for="username" class="form-label">Username</label>
+						<input type="text" class="form-control" id="username" name="username"
+							required>
+					</div>
+					<button type="submit" class="btn btn-primary w-100">Continue</button>
+				</form>
+			</div>
+		</div>
+	</div>
+</div>
+{% endblock %}

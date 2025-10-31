@@ -1,6 +1,8 @@
 import logging
 import os
+import random
 import secrets
+import string
 from urllib.parse import urljoin
 
 import psycopg2
@@ -16,6 +18,7 @@ from flask_login import (
     login_user,
     logout_user,
 )
+from flask_mail import Mail, Message
 from flask_wtf.csrf import CSRFProtect
 from psycopg2.extras import RealDictCursor
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -29,6 +32,17 @@ app.config["SECRET_KEY"] = "defaultkey"
 app.config["WTF_CSRF_ENABLED"] = True
 app.config["DATABASE_URL"] = os.environ.get("DATABASE_URL")
 
+app.config["MAIL_SERVER"] = os.environ.get("MAIL_SERVER", "smtp.gmail.com")
+app.config["MAIL_PORT"] = int(os.environ.get("MAIL_PORT", 587))
+app.config["MAIL_USE_TLS"] = True
+app.config["MAIL_USE_SSL"] = False
+app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME")
+app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD")
+app.config["MAIL_DEFAULT_SENDER"] = os.environ.get(
+    "MAIL_DEFAULT_SENDER", app.config["MAIL_USERNAME"]
+)
+
+mail = Mail(app)
 csrf = CSRFProtect(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -86,6 +100,27 @@ def init_db():
             provider_user_id VARCHAR(255) NOT NULL,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             UNIQUE(provider, provider_user_id)
+        )
+    """
+    )
+    cursor.execute(
+        """
+    CREATE TABLE IF NOT EXISTS password_resets (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        token VARCHAR(128) UNIQUE NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+        )
+    """
+    )
+    cursor.execute(
+        """
+    CREATE TABLE IF NOT EXISTS backup_codes (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        code_hash VARCHAR(255) NOT NULL,
+        used BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """
     )
@@ -248,6 +283,92 @@ def login():
     return render_template("login.html")
 
 
+@app.route("/request_password_reset", methods=["GET", "POST"])
+def request_password_reset():
+    if request.method == "POST":
+        email = request.form.get("email")
+        if not email:
+            flash("Please enter your email.", "danger")
+            return redirect(url_for("request_password_reset"))
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id FROM users WHERE email=%s", (email,))
+        user = cur.fetchone()
+
+        if not user:
+            flash("No account found with that email.", "danger")
+            conn.close()
+            return redirect(url_for("request_password_reset"))
+
+        token = secrets.token_urlsafe(32)
+        cur.execute(
+            "INSERT INTO password_resets (user_id, token) VALUES (%s, %s)",
+            (user["id"], token),
+        )
+        conn.commit()
+        conn.close()
+
+        reset_link = url_for("reset_password", token=token, _external=True)
+
+        try:
+            msg = Message(
+                subject="Password Reset Request",
+                recipients=[email],
+                body=f"Click the link below to reset your password:\n\n{reset_link}\n\nIf you didn’t request this, just ignore this email.",
+            )
+            mail.send(msg)
+            flash("A password reset link has been sent to your email.", "info")
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            flash(f"Failed to send email: {e}", "danger")
+
+        return redirect(url_for("login"))
+
+    return render_template("request_password_reset.html")
+
+
+@app.route("/reset_password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT user_id FROM password_resets WHERE token=%s", (token,))
+    record = cur.fetchone()
+
+    if not record:
+        flash("Invalid or expired reset link.", "danger")
+        conn.close()
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        password = request.form.get("password")
+        confirm = request.form.get("confirm")
+
+        if not password or not confirm:
+            flash("Please fill in both password fields.", "danger")
+            return redirect(url_for("reset_password", token=token))
+
+        if password != confirm:
+            flash("Passwords do not match.", "danger")
+            return redirect(url_for("reset_password", token=token))
+
+        hashed = generate_password_hash(password)
+        cur.execute(
+            "UPDATE users SET password_hash=%s WHERE id=%s", (hashed, record["user_id"])
+        )
+        cur.execute("DELETE FROM password_resets WHERE token=%s", (token,))
+        conn.commit()
+        conn.close()
+
+        flash("Password updated successfully! You can now log in.", "success")
+        return redirect(url_for("login"))
+
+    conn.close()
+    return render_template("reset_password.html", token=token)
+
+
 def redirect_uri_for(provider: str):
     base = os.environ.get("OAUTH_REDIRECT_BASE", request.host_url.rstrip("/"))
     return urljoin(base + "/", f"auth/{provider}/callback")
@@ -267,6 +388,56 @@ def oauth_login(provider):
         return client.authorize_redirect(redirect_uri_for(provider), nonce=nonce)
     else:
         return client.authorize_redirect(redirect_uri_for(provider))
+
+
+@app.route("/choose_username", methods=["GET", "POST"])
+def choose_username():
+    pending_oauth = session.get("pending_oauth")
+    if not pending_oauth:
+        flash("Session expired. Please log in again.", "warning")
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        username = request.form.get("username").strip()
+        if not username:
+            flash("Please enter a username.", "danger")
+            return redirect(url_for("choose_username"))
+
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            flash("Username already taken, please choose another.", "danger")
+            conn.close()
+            return redirect(url_for("choose_username"))
+
+        password_hash = generate_password_hash(secrets.token_hex(16))
+        cursor.execute(
+            "INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
+            (username, pending_oauth["email"], password_hash),
+        )
+        new_user_id = cursor.fetchone()["id"]
+
+        cursor.execute(
+            "INSERT INTO oauth_accounts (provider, provider_user_id, user_id) VALUES (%s, %s, %s)",
+            (
+                pending_oauth["provider"],
+                pending_oauth["provider_user_id"],
+                new_user_id,
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+        session.pop("pending_oauth", None)
+
+        user = User(new_user_id, username, pending_oauth["email"])
+        login_user(user)
+        ACTIVE_SESSIONS.add(user.id)
+        flash("Account created successfully!", "success")
+        return redirect(url_for("dashboard"))
+
+    return render_template("choose_username.html")
 
 
 @app.route("/auth/<provider>/callback")
@@ -595,27 +766,25 @@ def finish_oauth_login(provider, provider_user_id, email, username):
         """
         SELECT u.* FROM users u
         JOIN oauth_accounts oa ON u.id = oa.user_id
-        WHERE oa.provider=%s AND oa.provider_user_id=%s
+        WHERE oa.provider = %s AND oa.provider_user_id = %s
         """,
         (provider, provider_user_id),
     )
     user = cur.fetchone()
 
     if not user:
-        cur.execute("SELECT * FROM users WHERE email=%s", (email,))
+        cur.execute("SELECT * FROM users WHERE email = %s", (email,))
         user = cur.fetchone()
 
         if not user:
-            password_hash = generate_password_hash(secrets.token_hex(16))
-            cur.execute(
-                """
-                INSERT INTO users (username, email, password_hash)
-                VALUES (%s, %s, %s)
-                RETURNING *
-                """,
-                (username, email, password_hash),
-            )
-            user = cur.fetchone()
+            session["pending_oauth"] = {
+                "provider": provider,
+                "provider_user_id": provider_user_id,
+                "email": email,
+            }
+            conn.close()
+            flash("Welcome! Please choose a username to finish signing up.", "info")
+            return redirect(url_for("choose_username"))
 
         cur.execute(
             """
@@ -637,6 +806,89 @@ def finish_oauth_login(provider, provider_user_id, email, username):
     ACTIVE_SESSIONS.add(user["id"])
     flash(f"Logged in with {provider.capitalize()}", "success")
     return redirect(url_for("dashboard"))
+
+
+def generate_backup_code():
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+
+def hash_code(code):
+    from werkzeug.security import generate_password_hash
+
+    return generate_password_hash(code)
+
+
+@app.route("/generate_backup_codes")
+@login_required
+def generate_backup_codes():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("DELETE FROM backup_codes WHERE user_id = %s", (current_user.id,))
+
+    codes = [generate_backup_code() for _ in range(5)]
+    for code in codes:
+        cur.execute(
+            "INSERT INTO backup_codes (user_id, code_hash) VALUES (%s, %s)",
+            (current_user.id, hash_code(code)),
+        )
+
+    conn.commit()
+    conn.close()
+
+    return render_template("backup_codes.html", codes=codes)
+
+
+@app.route("/backup_login", methods=["GET", "POST"])
+def backup_login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        code = request.form.get("code")
+
+        if not username or not code:
+            flash("Please enter both fields.", "danger")
+            return redirect(url_for("backup_login"))
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cur.fetchone()
+
+        if not user:
+            flash("User not found.", "danger")
+            conn.close()
+            return redirect(url_for("backup_login"))
+
+        cur.execute(
+            "SELECT id, code_hash FROM backup_codes WHERE user_id = %s AND used = FALSE",
+            (user["id"],),
+        )
+        codes = cur.fetchall()
+
+        from werkzeug.security import check_password_hash
+
+        valid = False
+        code_id = None
+        for c in codes:
+            if check_password_hash(c["code_hash"], code.strip().upper()):
+                valid = True
+                code_id = c["id"]
+                break
+
+        if valid:
+            cur.execute("UPDATE backup_codes SET used = TRUE WHERE id = %s", (code_id,))
+            conn.commit()
+            conn.close()
+
+            login_user(User(user["id"], user["username"], user["email"]))
+            flash("Logged in using backup code!", "success")
+            return redirect(url_for("dashboard"))
+        else:
+            conn.close()
+            flash("Invalid or already used backup code.", "danger")
+            return redirect(url_for("backup_login"))
+
+    return render_template("backup_login.html")
 
 
 if __name__ == "__main__":
