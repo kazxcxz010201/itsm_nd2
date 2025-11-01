@@ -1,0 +1,18 @@
+FLASK_APP=app.py
+FLASK_RUN_HOST=0.0.0.0
+SECRET_KEY=superlongrandomsecretkey
+
+DATABASE_URL=postgresql://flaskuser:flaskpass@db:5432/flaskdb
+
+GOOGLE_CLIENT_ID=https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#get_your_google_api_client_id
+GOOGLE_CLIENT_SECRET=https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#get_your_google_api_client_id
+GITHUB_CLIENT_ID=https://support.heateor.com/get-github-client-id-client-secret/
+GITHUB_CLIENT_SECRET=https://support.heateor.com/get-github-client-id-client-secret/
+OAUTH_REDIRECT_BASE=http://localhost:5000
+
+MAIL_SERVER=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USE_TLS=True
+MAIL_USERNAME=youremail@gmail.com
+MAIL_PASSWORD=https://myaccount.google.com/apppasswords (just remove za spaces)
+MAIL_DEFAULT_SENDER=youremail@gmail.com

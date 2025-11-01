@@ -4,10 +4,11 @@
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card">
+    <div class="col-md-6 col-lg-5">
+        <div class="card shadow border-0">
             <div class="card-body p-5">
-                <h2 class="card-title text-center mb-4">Login</h2>
+                <h2 class="card-title text-center mb-4 fw-bold">Login</h2>
+
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
@@ -20,11 +21,64 @@
                     </div>
                     <button type="submit" class="btn btn-primary w-100">Login</button>
                 </form>
+
                 <div class="text-center mt-3">
-                    <p>Don't have an account? <a href="{{ url_for('signup') }}">Sign Up</a></p>
+                  <p class="text-muted mb-3">
+                    <a href="#" data-bs-toggle="modal" data-bs-target="#forgotPasswordModal">
+                      Forgot your password?
+                    </a>
+                  </p>
+
+                  <p>
+                    Don't have an account? <a href="{{ url_for('signup') }}">Sign Up</a>
+                  </p>
                 </div>
+
+
+                <hr class="my-4">
+
+                <div class="text-center">
+                    <p class="text-muted mb-3">Or continue with</p>
+                    <div class="d-grid gap-2">
+                        <a href="{{ url_for('oauth_login', provider='google') }}" 
+                           class="btn btn-light border d-flex align-items-center justify-content-center gap-2">
+                            <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" width="20" height="20">
+                            <span>Sign in with Google</span>
+                        </a>
+                        <a href="{{ url_for('oauth_login', provider='github') }}" 
+                           class="btn btn-dark d-flex align-items-center justify-content-center gap-2">
+                            <i class="bi bi-github"></i>
+                            <span>Sign in with GitHub</span>
+                        </a>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="forgotPasswordModal" tabindex="-1" aria-labelledby="forgotPasswordModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow">
+      <div class="modal-header">
+        <h5 class="modal-title fw-bold" id="forgotPasswordModalLabel">Recover Access</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body text-center">
+        <p class="mb-4">Choose how you'd like to regain access to your account:</p>
+
+        <div class="d-grid gap-2">
+          <a href="{{ url_for('request_password_reset') }}" class="btn btn-primary">
+            Reset via Email
+          </a>
+          <a href="{{ url_for('backup_login') }}" class="btn btn-outline-secondary">
+            Use a Backup Code
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
+

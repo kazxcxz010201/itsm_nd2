@@ -1,6 +1,10 @@
 ####
-sudo docker build -t flask-app:0.1.0 .
+put the .env file in the root dir
 ####
+```bash
+sudo docker-compose down # for re-runs, to avoid caching issues
 sudo docker-compose up --build
+```
 ####
+then go to:
 http://localhost:5000
